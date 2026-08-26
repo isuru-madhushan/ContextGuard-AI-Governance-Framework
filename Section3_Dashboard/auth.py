@@ -8,10 +8,18 @@ import time
 import base64
 import uuid
 import json
+import extra_streamlit_components as stx
 
 DB_PATH = "/home/izu/ShadowAI_Framework/Section3_Dashboard/users.db"
 SESSION_DIR = "/tmp/shadowai_sessions"
 os.makedirs(SESSION_DIR, exist_ok=True)
+
+_cookie_manager = None
+def get_cookie_manager():
+    global _cookie_manager
+    if _cookie_manager is None:
+        _cookie_manager = stx.CookieManager(key="auth_cm")
+    return _cookie_manager
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -26,18 +34,51 @@ def init_auth_db():
             role TEXT
         )
     ''')
-    demo_users = [
-        ("admin", hash_password("adminpassword"), "Senior Security Architect"),
-        ("user",  hash_password("userpassword"),  "AI Governance Auditor")
-    ]
-    for user, pw_hash, role in demo_users:
-        cursor.execute('SELECT username FROM users WHERE username = ?', (user,))
-        if not cursor.fetchone():
-            cursor.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', (user, pw_hash, role))
+    # Seed default admin only if the database is completely empty
+    cursor.execute('SELECT COUNT(*) FROM users')
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', 
+            ("admin", hash_password("adminpassword"), "Admin L2")
+        )
+    conn.commit()
+    
+    # Update existing users to new roles just in case
+    cursor.execute('UPDATE users SET role = "Admin L2" WHERE role = "Senior Security Architect"')
+    cursor.execute('UPDATE users SET role = "L1" WHERE role = "AI Governance Auditor"')
+    conn.commit()
+    
+    conn.close()
+
+#  USER MANAGEMENT HELPERS 
+def get_all_users():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, role FROM users')
+    users = cursor.fetchall()
+    conn.close()
+    return [{"username": u[0], "role": u[1]} for u in users]
+
+def add_user(username, password, role):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', (username, hash_password(password), role))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False # User already exists
+    conn.close()
+    return success
+
+def delete_user(username):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM users WHERE username = ?', (username,))
     conn.commit()
     conn.close()
 
-# ── SESSION PERSISTENCE HELPERS ──────────────────────────────────────────────
+#  SESSION PERSISTENCE HELPERS 
 def create_session(username, role):
     """Create a server-side session file. Returns the session token."""
     token = str(uuid.uuid4())
@@ -74,11 +115,17 @@ def destroy_session(token):
 
 def check_auth():
     """Return True if already authenticated in session_state,
-    OR if a valid session token exists in the URL query param."""
+    OR if a valid session token exists in cookies/URL."""
     if st.session_state.get('authenticated', False):
         return True
-    # Try to restore from URL token (survives browser refresh)
-    token = st.query_params.get("_sid", None)
+    
+    cm = get_cookie_manager()
+    token = cm.get(cookie="shadowai_sid")
+    
+    # Fallback to URL token if cookie not immediately available
+    if not token:
+        token = st.query_params.get("_sid", None)
+        
     if token:
         username, role = validate_session(token)
         if username:
@@ -88,12 +135,17 @@ def check_auth():
             st.session_state['session_token']   = token
             st.session_state['login_attempts']  = 0
             st.session_state['lockout_time']    = 0
+            # Ensure cookie is set for future tabs
+            if not cm.get(cookie="shadowai_sid"):
+                cm.set("shadowai_sid", token)
             return True
     return False
 
 def logout_user():
+    cm = get_cookie_manager()
     token = st.session_state.get('session_token')
     destroy_session(token)
+    cm.delete("shadowai_sid")
     st.session_state['authenticated']  = False
     st.session_state['username']       = None
     st.session_state['user_role']      = None
@@ -125,15 +177,15 @@ def verify_login(username, password):
     return False, None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 def render_login_page():
-# ─────────────────────────────────────────────────────────────────────────────
+# 
     if 'login_attempts' not in st.session_state:
         st.session_state['login_attempts'] = 0
     if 'lockout_time' not in st.session_state:
         st.session_state['lockout_time'] = 0
 
-    # ── Encode logo as base64 for inline embedding ──
+    #  Encode logo as base64 for inline embedding 
     logo_path = "/home/izu/ShadowAI_Framework/Logo/ContextGuard.png"
     logo_b64 = ""
     if os.path.exists(logo_path):
@@ -141,7 +193,7 @@ def render_login_page():
             logo_b64 = base64.b64encode(f.read()).decode()
     logo_html = f"<img src='data:image/png;base64,{logo_b64}' alt='ContextGuard'/>" if logo_b64 else "🛡️"
 
-    # ── Inject full-page CSS ──
+    #  Inject full-page CSS 
     st.markdown(f"""
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
@@ -411,7 +463,7 @@ def render_login_page():
         </div>
     """, unsafe_allow_html=True)
 
-    # ── Brute-force lockout ──
+    #  Brute-force lockout 
     if st.session_state['login_attempts'] >= 5:
         elapsed = time.time() - st.session_state['lockout_time']
         if elapsed < 30:
@@ -424,7 +476,7 @@ def render_login_page():
         username = st.text_input("Username", placeholder="admin or user")
         password = st.text_input("Password", type="password", placeholder="Enter your password")
 
-        # ── JS: Inject custom SVG eye-toggle button at exact right edge ──
+        #  JS: Inject custom SVG eye-toggle button at exact right edge 
         components.html("""
         <script>
         function injectEye() {
@@ -468,8 +520,10 @@ def render_login_page():
                 else:
                     success, role = verify_login(username, password)
                     if success:
-                        # Create persistent session token (survives browser refresh)
+                        cm = get_cookie_manager()
+                        # Create persistent session token
                         token = create_session(username, role)
+                        cm.set("shadowai_sid", token)
                         st.session_state['authenticated']  = True
                         st.session_state['username']       = username
                         st.session_state['user_role']      = role

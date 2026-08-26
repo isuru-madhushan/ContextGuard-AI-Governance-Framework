@@ -1,0 +1,17 @@
+{
+    "192.168.89.140": {
+        "username": "admin",
+        "role": "Privileged Admin",
+        "last_seen": "now"
+    },
+    "192.168.89.134": {
+        "username": "isuru",
+        "role": "Medical Specialist",
+        "last_seen": "now"
+    },
+    "192.168.89.142": {
+        "username": "user_mary_jayasinghe",
+        "role": "Standard Staff",
+        "last_seen": "now"
+    }
+}

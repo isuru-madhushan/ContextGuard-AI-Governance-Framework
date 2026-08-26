@@ -2,50 +2,189 @@ from mitmproxy import http
 import json
 import datetime
 import os
+import re
+import time
 import urllib.parse
 
 LOG_FILE = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/wrse_comprehensive_audit.log"
+DOMAINS_FILE = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/domains.json"
 
-MONITORED_AI_DOMAINS = [
-    "chatgpt.com", "api.openai.com", "gemini.google.com", 
-    "claude.ai", "deepseek.com", "copilot.microsoft.com"
-]
+
+def load_monitored_domains():
+    """Load AI domains dynamically from domains.json so all 60+ AI tools are captured."""
+    try:
+        with open(DOMAINS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        # Fallback to core domains if file is missing
+        return [
+            "chatgpt.com", "api.openai.com", "openai.com",
+            "gemini.google.com", "ai.google.com",
+            "claude.ai", "anthropic.com",
+            "deepseek.com", "copilot.microsoft.com",
+            "perplexity.ai", "mistral.ai", "groq.com",
+            "huggingface.co", "cohere.com", "replicate.com",
+            "poe.com", "character.ai", "you.com",
+            "together.ai", "x.ai", "pi.ai"
+        ]
 
 def request(flow: http.HTTPFlow) -> None:
+    monitored_domains = load_monitored_domains()
     request_host = flow.request.pretty_host.lower()
-    is_ai_traffic = any(domain in request_host for domain in MONITORED_AI_DOMAINS)
-    
-    if is_ai_traffic and flow.request.method == "POST":
+
+    # Check if this traffic is to ANY known AI domain
+    is_ai_traffic = any(domain.lower() in request_host for domain in monitored_domains)
+
+    if is_ai_traffic and flow.request.method in ("POST", "PUT", "PATCH"):
+        # --- NEW TELEMETRY FILTER ---
+        req_url = flow.request.url.lower()
+        if any(x in req_url for x in ["/events", "/metrics", "/lat/", "/log", "/telemetry", "/ces/v1", "/track", "/stats"]):
+            return
+        # ----------------------------
         try:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 
             
-            flow.request.decode() 
+            # 
+            # PHASE 1+: Normal text prompt parsing (existing logic)
+            # 
+            flow.request.decode()
             raw_content = flow.request.get_text()
-            
-            # 🎯 ADVANCED DOUBLE-PLANE URL DECODING ENGINE
-            # Ingestion stream eke payload eka plain string ekak widiyata decode karala gannawa
-            if "f.req=" in raw_content or "%5B" in raw_content or "%22" in raw_content:
-                # URL entities decode kirima
-                decoded_stage = urllib.parse.unquote(raw_content)
-                # Garbage boundary structures cleaner execution
-                prompt_text = decoded_stage.replace("f.req=", "").strip()
-            else:
-                prompt_text = "N/A"
+
+            #  ADVANCED MULTI-FORMAT AI PAYLOAD PARSER
+            # Supports: OpenAI, Claude, Gemini, Perplexity, Mistral, HuggingFace, Cohere, Grok, etc.
+            prompt_text = None
+            import base64
+
+            # Stage 0: Grok / xAI SSE format  data=<base64_encoded_json>
+            if raw_content.strip().startswith("data=") or "\ndata=" in raw_content:
+                try:
+                    for line in raw_content.splitlines():
+                        line = line.strip()
+                        if line.startswith("data="):
+                            b64_value = urllib.parse.unquote(line[5:])  # Strip "data=" prefix
+                            try:
+                                decoded_bytes = base64.b64decode(b64_value + "==")  # Pad for safety
+                                decoded_str = decoded_bytes.decode("utf-8", errors="ignore")
+                                inner = json.loads(decoded_str)
+                                # Try known Grok keys
+                                for key in ["message", "userMessage", "prompt", "query", "text", "content", "requestMessage", "humanTurn"]:
+                                    if key in inner:
+                                        val = inner[key]
+                                        prompt_text = val if isinstance(val, str) else str(val)
+                                        break
+                                if not prompt_text:
+                                    # Log the keys so we can add them
+                                    print(f"[🔍 GROK KEY DUMP] Keys: {list(inner.keys())}")
+                                    prompt_text = decoded_str[:400]
+                            except Exception:
+                                # Not valid base64 JSON - try raw URL decode
+                                prompt_text = urllib.parse.unquote(line[5:])[:400]
+                            if prompt_text:
+                                break
+                except Exception as e:
+                    print(f"[!] Grok SSE parse error: {e}")
+
+            # Stage 1: Form Data & URL-encoded format (ChatGPT Web, Gemini)
+            if not prompt_text:
+                parsed_qs = urllib.parse.parse_qs(raw_content)
+                if "prompt" in parsed_qs:
+                    prompt_text = parsed_qs["prompt"][0]
+                elif "f.req" in parsed_qs:
+                    prompt_text = parsed_qs["f.req"][0]
+                elif "f.req=" in raw_content:
+                    decoded_stage = urllib.parse.unquote(raw_content)
+                    prompt_text = decoded_stage.split("f.req=")[-1].split("&")[0].strip()
+
+            # Stage 2: JSON parsing - try all known AI API formats
+            if not prompt_text or len(prompt_text.strip()) < 5:
                 try:
                     data = json.loads(raw_content)
+
+                    # --- OpenAI / ChatGPT format ---
                     if "messages" in data:
                         msg_list = data.get("messages", [])
-                        if msg_list and isinstance(msg_list, list):
-                            parts = msg_list[0].get("content", {}).get("parts", [None])[0]
-                            prompt_text = str(parts) if parts else "Dynamic Session Initialization"
+                        texts = []
+                        for msg in msg_list:
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                texts.append(content.strip())
+                            elif isinstance(content, list):
+                                for part in content:
+                                    if isinstance(part, dict) and part.get("type") == "text":
+                                        texts.append(part.get("text", ""))
+                            elif isinstance(content, dict):
+                                parts = content.get("parts", [])
+                                if isinstance(parts, list):
+                                    for part in parts:
+                                        if isinstance(part, str):
+                                            texts.append(part.strip())
+                        prompt_text = " | ".join(texts) if texts else None
+
+                    # --- Perplexity format ---
+                    elif "query_str" in data:
+                        prompt_text = str(data["query_str"])
+                    elif "search_query" in data:
+                        prompt_text = str(data["search_query"])
+
+                    # --- Anthropic / Claude format ---
                     elif "prompt" in data:
                         prompt_text = str(data["prompt"])
-                except:
-                    if len(raw_content) > 5:
-                        prompt_text = raw_content[:400]
 
-            if not prompt_text or prompt_text == "N/A" or prompt_text.strip() == "":
-                return
+                    # --- HuggingFace / Inference API ---
+                    elif "inputs" in data:
+                        inp = data["inputs"]
+                        prompt_text = inp if isinstance(inp, str) else str(inp)
+
+                    # --- Cohere format ---
+                    elif "message" in data:
+                        prompt_text = str(data["message"])
+                    elif "chat_history" in data:
+                        history = data.get("chat_history", [])
+                        if history:
+                            prompt_text = str(history[-1].get("message", ""))
+
+                    # --- Generic / Mistral / Groq / Together / Replicate ---
+                    elif "text" in data:
+                        prompt_text = str(data["text"])
+                    elif "query" in data:
+                        prompt_text = str(data["query"])
+                    elif "q" in data:
+                        prompt_text = str(data["q"])
+                    elif "input" in data:
+                        inp = data["input"]
+                        prompt_text = inp if isinstance(inp, str) else str(inp)
+                    elif "content" in data:
+                        prompt_text = str(data["content"])
+
+                except json.JSONDecodeError:
+                    pass
+
+            # GROK DEBUG: Print what we got so we can identify the format
+            if "grok" in request_host or "x.ai" in request_host:
+                print(f"\n[🔍 GROK DEBUG] URL: {flow.request.url}")
+                print(f"[🔍 GROK DEBUG] Content-Type: {flow.request.headers.get('Content-Type', 'N/A')}")
+                print(f"[🔍 GROK DEBUG] Raw (first 300 chars): {raw_content[:300]}")
+                print(f"[🔍 GROK DEBUG] Parsed prompt: {str(prompt_text)[:200] if prompt_text else 'NONE'}\n")
+
+            # Stage 3: Aggressive raw content fallback (Disabled to prevent telemetry FP)
+            if not prompt_text or len(str(prompt_text).strip()) < 5:
+                return # Skip logging entirely if we couldn't find a valid prompt
+            if prompt_text:
+                pt_str = str(prompt_text).strip()
+                if pt_str.startswith("trace=") or "PCck7e" in pt_str or "aPya6c" in pt_str:
+                    return
+                if len(pt_str) < 3 and pt_str.lower() not in ["hi", "ok", "no"]:
+                    return
+
+                # Filter Gemini background telemetry
+                if pt_str.startswith('[[["') and '","[' in pt_str:
+                    if len(pt_str) < 150 or '"generic"]]]' in pt_str:
+                        return
+
+
+
 
             client_ip = flow.client_conn.peername[0]
             client_port = flow.client_conn.peername[1]
@@ -87,6 +226,7 @@ def request(flow: http.HTTPFlow) -> None:
             with open(LOG_FILE, "w") as f:
                 json.dump(logs, f, indent=4)
                 
-            print(f"[🛡️ INGESTION PLANE CLEANED] Successfully parsed traffic signature.")
-        except Exception:
+            print(f"[🛡️ CAPTURED] {request_host} | From: {client_ip} | Prompt: {str(prompt_text)[:80]}...")
+        except Exception as e:
+            print(f"[!] Logger error: {e}")
             pass

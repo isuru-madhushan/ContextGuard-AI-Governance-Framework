@@ -5,10 +5,9 @@ import os
 import re
 import urllib.parse
 from datetime import datetime
+import sqlite3
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 🧠 WRSE ENGINE CORE & MASTER 15-SHEET CSV MULTI-ASSET INDEXER
-# ══════════════════════════════════════════════════════════════════════════════
+#  WRSE ENGINE CORE & MASTER 15-SHEET CSV MULTI-ASSET INDEXER
 
 DEFAULT_KEYWORDS = {
     "production server":  (0.90, "Infrastructure Core Assets"),
@@ -36,7 +35,7 @@ ASSET_TIERS = [
 
 W_S, W_D, W_U = 0.50, 0.25, 0.25
 
-# ── FILE PATHS ────────────────────────────────────────────────────────────────
+#  FILE PATHS 
 LOG_FILE           = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/wrse_comprehensive_audit.log"
 DATA_SHEETS_DIR    = "/home/izu/ShadowAI_Framework/data Sheets"
 CUSTOM_ASSETS_FILE = "/home/izu/ShadowAI_Framework/Section3_Dashboard/custom_assets.json"
@@ -49,7 +48,7 @@ UNIQUE_ID_COLS = {
 }
 
 
-# ── CUSTOM ASSET MANAGER ──────────────────────────────────────────────────────
+#  CUSTOM ASSET MANAGER 
 def load_custom_assets():
     if os.path.exists(CUSTOM_ASSETS_FILE):
         try:
@@ -72,54 +71,171 @@ def get_keywords_db():
     return db
 
 
-# ── WRSE CORE FUNCTIONS ───────────────────────────────────────────────────────
+#  WRSE CORE FUNCTIONS 
 def forensic_normalize(text):
-    if "%5B" in text or "%22" in text:
+    import urllib.parse
+    import base64
+    import json
+    
+    # 1. Multi-pass URL Entity Unquoting
+    prev_text = ""
+    while prev_text != text and "%" in text:
+        prev_text = text
         text = urllib.parse.unquote(text)
+        
+    # 2. Google Gemini f.req= parser
+    # Extract actual user prompt payload from Google internal JSON wrappers
+    if "f.req=" in text:
+        try:
+            # Usually f.req is followed by an array string. 
+            match = re.search(r'f\.req=(.*?)(?:&|$)', text)
+            if match:
+                payload = match.group(1)
+                parsed = json.loads(payload)
+                # It's usually nested arrays. Just flatten all string values
+                def extract_strings(obj):
+                    res = []
+                    if isinstance(obj, str): res.append(obj)
+                    elif isinstance(obj, list):
+                        for item in obj: res.extend(extract_strings(item))
+                    elif isinstance(obj, dict):
+                        for val in obj.values(): res.extend(extract_strings(val))
+                    return res
+                strings = extract_strings(parsed)
+                text = " ".join([s for s in strings if len(s) > 5])
+        except Exception:
+            pass
+            
+    # 3. Automated Base64 Payload Inspector
+    b64_pattern = r'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?'
+    b64_matches = re.findall(b64_pattern, text)
+    for b64 in b64_matches:
+        try:
+            decoded = base64.b64decode(b64).decode('utf-8', errors='ignore')
+            if len(decoded.strip()) > 5:
+                text += " " + decoded
+        except Exception:
+            pass
+
+    # Basic cleanup (like before)
     strings = re.findall(r'"([a-zA-Z0-9\s\.\,\!\?\:\-\_\/\@\#\$\%\^\&\*\(\)\+]{6,})"', text)
     if strings:
         valid = [s for s in strings if s not in ["en-US","N/A"] and not s.startswith(("c_","r_"))]
-        text = max(valid, key=len) if valid else strings[0]
-    text = text.replace('\\"','').replace('"','').replace('[','').replace(']','').strip()
+        text_from_quotes = max(valid, key=len) if valid else strings[0]
+        text = text + " " + text_from_quotes
+        
+    text = text.replace('\\"', '').replace('"', '').replace('[', '').replace(']', '').strip()
     clean = re.sub(r'[^\w\s\.]', ' ', text.lower())
-    return clean, text
+    
+    # 4. Whitespace/Delimiter Stripping (zero-space alphanumeric)
+    compressed = re.sub(r'[\s\-_]+', '', text).lower()
+    
+    return clean, text, compressed
 
 
 def calculate_wrse(prompt_text, dest_trust_w, user_auth_w, asset_matches=None):
-    clean_text, normalized_str = forensic_normalize(prompt_text)
+    clean_text, original_str, compressed_str = forensic_normalize(prompt_text)
     detected_keywords = []
     detected_tiers = set()
     KEYWORDS_DB = get_keywords_db()
 
+    s_score = 0.0
+
+    #  STANDARD TEXT PROMPT SCORING (FILE UPLOAD REMOVED) 
     if asset_matches:
-        # Sum asset weights for all distinct assets leaked in the payload
-        s_score = sum(float(m["ASSET WEIGHT"]) for m in asset_matches)
-        s_score = min(s_score, 1.0)
+        # Class 1: Deterministic Match (assigns Tier-based score instead of summation)
         for m in asset_matches:
-            detected_keywords.append(f"Match:{m.get('RECORD ID', 'Asset')} (Wi={m.get('ASSET WEIGHT', 0.95)})")
-            detected_tiers.add(m.get("DATA TIER", "Medical Records (PHI)"))
-    else:
-        s_score = 0.0
-        if re.search(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', normalized_str):
-            s_score += 0.95
-            detected_keywords.append("Exposed Internal IP")
-            detected_tiers.add("Infrastructure Core Assets")
-        for word, (weight, tier) in KEYWORDS_DB.items():
-            count = clean_text.count(word)
-            if count > 0:
-                s_score += weight * count
-                detected_keywords.append(word)
-                detected_tiers.add(tier)
-        s_score = min(s_score, 1.0)
+            tier_str = str(m.get("DATA TIER", ""))
+            tier_score = 0.95 if "Tier 1" in tier_str else (0.90 if "Tier 2" in tier_str else 0.85)
+            s_score = max(s_score, tier_score)
+            detected_keywords.append(f"Match:{m.get('RECORD ID', 'Asset')} (S={tier_score})")
+            detected_tiers.add(tier_str)
 
-    rs = (W_S * s_score) + (W_D * dest_trust_w) + (W_U * user_auth_w)
-    return round(rs * 100, 2), detected_keywords, list(detected_tiers), clean_text, normalized_str
+    # Class 1: Standalone High-Entropy Primary Identifiers
+    
+    # Stripe / Live API Keys (checks compressed string for obfuscation too)
+    if re.search(r'sk_live_[a-zA-Z0-9]{20,}', original_str) or re.search(r'sklive[a-zA-Z0-9]{20,}', compressed_str):
+        s_score = max(s_score, 0.85)
+        detected_keywords.append("API Secret Key")
+        detected_tiers.add("Tier 3 - SourceCodeAPI")
+        
+    # JWT Tokens
+    if re.search(r'eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}', original_str):
+        s_score = max(s_score, 0.85)
+        detected_keywords.append("JWT Token")
+        detected_tiers.add("Tier 3 - SourceCodeAPI")
+        
+    # Private RFC-1918 IPv4 Blocks
+    if re.search(r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b', original_str):
+        s_score = max(s_score, 0.90)
+        detected_keywords.append("Internal RFC-1918 IPv4")
+        detected_tiers.add("Tier 2 - NetworkNodes")
+        
+    # Database URIs
+    if re.search(r'(mysql|postgresql|mongodb)://', original_str, re.IGNORECASE):
+        s_score = max(s_score, 0.90)
+        detected_keywords.append("Database URI")
+        detected_tiers.add("Tier 2 - DBConnections")
+        
+    # US SSN
+    if re.search(r'\b\d{3}-\d{2}-\d{4}\b', original_str):
+        s_score = max(s_score, 0.95)
+        detected_keywords.append("US SSN")
+        detected_tiers.add("Tier 1 - PHI")
+        
+    # Patient ID format
+    if re.search(r'\bTM-202[0-9]-[0-9]{4}\b', original_str):
+        s_score = max(s_score, 0.95)
+        detected_keywords.append("Patient ID")
+        detected_tiers.add("Tier 1 - PHI")
+        
+    # Formatted Record IDs (Tier 1 - PHI)
+    if re.search(r'\b(CLN|INS|LAB|REC|RX)-\d{4,8}\b', original_str):
+        s_score = max(s_score, 0.95)
+        detected_keywords.append("Formatted Record ID (PHI)")
+        detected_tiers.add("Tier 1 - PHI")
 
+    # Formatted Record IDs (Tier 2 - Infrastructure)
+    if re.search(r'\b(DB|IAM|NET|TOP|SEC)-\d{4,8}\b', original_str):
+        s_score = max(s_score, 0.90)
+        detected_keywords.append("Formatted Record ID (Infra)")
+        detected_tiers.add("Tier 2 - NetworkNodes")
+
+    # Formatted Record IDs (Tier 3 - Corporate IP)
+    if re.search(r'\b(HL7|ALG|SRC|STR|VND)-\d{4,8}\b', original_str):
+        s_score = max(s_score, 0.85)
+        detected_keywords.append("Formatted Record ID (IP)")
+        detected_tiers.add("Tier 3 - StrategicBlueprints")
+
+    # Class 2: Quasi-Identifiers & Context Correlation
+    quasi_matches = 0
+    highest_quasi_tier_score = 0.85 # Default to Tier 3
+    
+    for word, (weight, tier) in KEYWORDS_DB.items():
+        if word in clean_text:
+            quasi_matches += 1
+            detected_keywords.append(word)
+            detected_tiers.add(tier)
+            if "Tier 1" in tier:
+                highest_quasi_tier_score = max(highest_quasi_tier_score, 0.95)
+            elif "Tier 2" in tier:
+                highest_quasi_tier_score = max(highest_quasi_tier_score, 0.90)
+            
+    if quasi_matches == 1:
+        # Isolated Occurrence
+        pass # s_score remains max(s_score, 0)
+    elif quasi_matches >= 2:
+        # Combinatorial Leak elevates S
+        s_score = max(s_score, highest_quasi_tier_score)
+
+    rs = (0.50 * s_score) + (0.25 * dest_trust_w) + (0.25 * user_auth_w)
+    return round(rs * 100, 2), detected_keywords, list(detected_tiers), clean_text, original_str
 
 def get_severity(score):
-    if score > 80:    return "CRITICAL", "🔴"
-    elif score >= 55: return "MEDIUM",   "🟡"
-    else:             return "LOW",      "🟢"
+    if score > 80:    return "CRITICAL", ""
+    elif score >= 70: return "HIGH",     ""
+    elif score >= 55: return "MEDIUM",   ""
+    else:             return "LOW",      ""
 
 
 def score_bar_html(score):
@@ -127,105 +243,75 @@ def score_bar_html(score):
     return f'<div class="score-bar-wrap"><div class="score-bar" style="width:{min(score,100)}%;background:{color};"></div></div>'
 
 
-# ── MASTER 15-SHEET CSV ASSET DATASET LOADING & MATCHING ──────────────────────
+#  MASTER 15-SHEET CSV ASSET DATASET LOADING & MATCHING 
 @st.cache_data(show_spinner=False)
 def load_master_dataset():
-    if not os.path.exists(DATA_SHEETS_DIR):
+    DB_PATH = "/home/izu/ShadowAI_Framework/Section3_Dashboard/assets.db"
+    if not os.path.exists(DB_PATH):
         return {}, {}
     
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    
     all_sheets = {}
+    sheet_names = pd.read_sql("SELECT DISTINCT sheet_name FROM master_assets", conn)['sheet_name'].tolist()
+    for s in sheet_names:
+        df = pd.read_sql(f"SELECT * FROM master_assets WHERE sheet_name='{s}'", conn)
+        df.rename(columns={
+            "sheet_name": "SHEET_NAME",
+            "record_id": "RECORD ID",
+            "patient_name": "PATIENT NAME",
+            "patient_id": "PATIENT ID",
+            "ssn": "SSN",
+            "date_of_birth": "DATE OF BIRTH",
+            "blood_type": "BLOOD TYPE",
+            "nationality": "NATIONALITY",
+            "data_tier": "DATA TIER",
+            "section": "SECTION",
+            "original_attributes": "_original_attributes"
+        }, inplace=True)
+        all_sheets[s] = df
+
     idx = {
         "record_ids": {},
         "patient_ids": {},
         "tokens": {},
     }
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM master_assets")
+    rows = cursor.fetchall()
+    col_names = [desc[0] for desc in cursor.description]
+    
+    for row in rows:
+        row_dict = dict(zip(col_names, row))
+        record = {
+            "SHEET_NAME":          row_dict["sheet_name"],
+            "RECORD ID":           row_dict["record_id"],
+            "PATIENT NAME":        row_dict["patient_name"],
+            "PATIENT ID":          row_dict["patient_id"],
+            "SSN":                 row_dict["ssn"],
+            "DATE OF BIRTH":       row_dict["date_of_birth"],
+            "BLOOD TYPE":          row_dict["blood_type"],
+            "NATIONALITY":         row_dict["nationality"],
+            "DATA TIER":           row_dict["data_tier"],
+            "SECTION":             row_dict["section"],
+            "_original_attributes": json.loads(row_dict["original_attributes"]) if row_dict["original_attributes"] else {},
+        }
+        rec_id = str(row_dict["record_id"]).strip().upper()
+        if rec_id: idx["record_ids"][rec_id] = record
+        
+        pid = str(row_dict["patient_id"]).strip().upper()
+        if pid: idx["patient_ids"][pid] = record
 
-    # Load all CSV files in the data Sheets directory
-    for fname in sorted(os.listdir(DATA_SHEETS_DIR)):
-        if not fname.endswith(".csv"):
-            continue
-        sheet_name = fname.replace(".csv", "")
-        fpath = os.path.join(DATA_SHEETS_DIR, fname)
-        try:
-            df = pd.read_csv(fpath)
-            all_sheets[sheet_name] = df
-            
-            for _, row in df.iterrows():
-                # Extract original dynamic attributes matching the exact tier sheet columns
-                original_attrs = {str(k): str(v) for k, v in row.items() if pd.notna(v) and str(v).strip() != ""}
-                
-                # Determine fallback display values for dashboard columns
-                entity_name = ""
-                for name_col in ["PATIENT NAME", "USERNAME", "SERVER NAME", "DB TYPE", "MODULE NAME", "PROJECT NAME", "NODE NAME", "TOPOLOGY ID", "PERIMETER ID", "VENDOR NAME", "ALGORITHM NAME", "PROTOCOL ID"]:
-                    if name_col in original_attrs:
-                        entity_name = original_attrs[name_col]
-                        break
-                if not entity_name:
-                    entity_name = row.get("RECORD ID", "Asset Match")
+    cursor.execute("SELECT token_value, record_id FROM asset_tokens")
+    for token_val, rec_id in cursor.fetchall():
+        token = str(token_val).strip()
+        rec_id_up = str(rec_id).strip().upper()
+        if rec_id_up in idx["record_ids"]:
+            idx["tokens"][token] = idx["record_ids"][rec_id_up]
 
-                sec_id = ""
-                for sec_col in ["PATIENT ID", "IP ADDRESS", "GIT REPOSITORY", "AD FOREST", "DB CONNECTION STRING", "SUBNET", "API KEY HASH", "CONTRACT ID", "HL7 MESSAGE HEADER"]:
-                    if sec_col in original_attrs:
-                        sec_id = original_attrs[sec_col]
-                        break
-
-                date_val = ""
-                for dt_col in ["DATE OF BIRTH", "LAST LOGIN", "LAST BACKUP", "LAST COMMIT DATE", "CLAIM DATE", "EXECUTION DATE", "EXPIRATION DATE"]:
-                    if dt_col in original_attrs:
-                        date_val = str(original_attrs[dt_col])
-                        break
-
-                details_val = ""
-                for d_col in ["BLOOD TYPE", "IAM ROLE", "OS VERSION", "PROGRAMMING LANGUAGE", "DB ENGINE", "DEVICE TYPE", "PROTOCOL TYPE", "STATUS", "ACCOUNT STATUS"]:
-                    if d_col in original_attrs:
-                        details_val = str(original_attrs[d_col])
-                        break
-
-                loc_val = ""
-                for l_col in ["NATIONALITY", "DEPARTMENT", "LOCATION", "CLOUD PROVIDER", "REGION", "FACILITY", "INSURANCE PROVIDER"]:
-                    if l_col in original_attrs:
-                        loc_val = str(original_attrs[l_col])
-                        break
-
-                tier_val = row.get("DATA TIER", f"Tier {'1' if sheet_name.startswith('T1') else ('2' if sheet_name.startswith('T2') else '3')} - {sheet_name[3:]}")
-                weight_val = float(row.get("ASSET WEIGHT", 0.95 if sheet_name.startswith("T1") else (0.90 if sheet_name.startswith("T2") else 0.85)))
-                sens_val = row.get("SENSITIVITY LEVEL", "CRITICAL" if sheet_name.startswith("T1") else "HIGH")
-
-                record = {
-                    "SHEET_NAME":          sheet_name,
-                    "RECORD ID":           row.get("RECORD ID", ""),
-                    "PATIENT NAME":        entity_name,
-                    "PATIENT ID":          sec_id,
-                    "SSN":                 row.get("SSN", ""),
-                    "DATE OF BIRTH":       date_val,
-                    "BLOOD TYPE":          details_val,
-                    "NATIONALITY":         loc_val,
-                    "DATA TIER":           tier_val,
-                    "SECTION":             row.get("SECTION", sheet_name),
-                    "ASSET WEIGHT":        weight_val,
-                    "SENSITIVITY LEVEL":   sens_val,
-                    "_original_attributes": original_attrs,
-                }
-
-                # Index Record ID (e.g. IAM-670469, INS-985884, SRC-518498, HL7-517169, etc.)
-                rec_id = str(row.get("RECORD ID", "")).strip().upper()
-                if rec_id: idx["record_ids"][rec_id] = record
-
-                # Index Patient ID (e.g. TM-XXXX-XXXX)
-                pid = str(row.get("PATIENT ID", "")).strip().upper()
-                if pid: idx["patient_ids"][pid] = record
-
-                # Index ONLY highly specific unique identifiers (Hashes, Contract IDs, Tokens, DB Strings, API Keys, IPs)
-                # This prevents common names or status words like "Robert Perera" or "Under Review" from causing duplicate matches!
-                for col_name, val in original_attrs.items():
-                    val_str = str(val).strip()
-                    if len(val_str) > 5 and col_name in UNIQUE_ID_COLS:
-                        if val_str not in idx["tokens"]:
-                            idx["tokens"][val_str] = record
-
-        except Exception:
-            continue
-
+    conn.close()
     return all_sheets, idx
 
 
@@ -257,9 +343,14 @@ def find_master_asset_match(prompt_text, asset_index):
                 if len(val_str) > 5:
                     matched_token_values.add(val_str)
 
-    # 2. Token / Substring matching (Only specific Hashes, API Keys, IPs, Git Repos, Contract IDs, etc.)
-    for token, rec in asset_index.get("tokens", {}).items():
-        if token in prompt_text:
+    # 2. Token / Substring matching (Optimized O(1) Lookups)
+    # Tokenize the prompt text to match against the 35,000+ zero-space tokens instantly
+    prompt_tokens = set(re.split(r'[^a-zA-Z0-9_\-\.]', prompt_text))
+    tokens_db = asset_index.get("tokens", {})
+    
+    for token in prompt_tokens:
+        if len(token) > 5 and token in tokens_db:
+            rec = tokens_db[token]
             # Check if this token is already accounted for by an existing matched record
             if token not in matched_token_values and rec and rec["RECORD ID"] not in seen_records:
                 seen_records.add(rec["RECORD ID"])
@@ -272,7 +363,7 @@ def find_master_asset_match(prompt_text, asset_index):
     return matches
 
 
-# ── LOG INGESTION & PROCESSING ────────────────────────────────────────────────
+#  LOG INGESTION & PROCESSING 
 @st.cache_data(ttl=30, show_spinner=False)
 def load_logs():
     if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
@@ -284,8 +375,21 @@ def load_logs():
         return []
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def load_agent_registry():
+    REGISTRY_FILE = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/agent_registry.json"
+    if os.path.exists(REGISTRY_FILE):
+        try:
+            with open(REGISTRY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def process_events():
+    agent_registry = load_agent_registry()
     raw_logs = load_logs()
     all_sheets, asset_idx = load_master_dataset()
     if not raw_logs:
@@ -294,7 +398,16 @@ def process_events():
     events = []
     asset_match_count = 0
 
+    # Load AI domains once (outside loop for performance)
+    DOMAINS_FILE = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/domains.json"
+    try:
+        with open(DOMAINS_FILE, "r") as _f:
+            all_ai_domains = [d.lower() for d in json.load(_f)]
+    except Exception:
+        all_ai_domains = ["chatgpt.com", "claude.ai", "gemini.google.com", "openai.com", "anthropic.com"]
+
     for idx_e, entry in enumerate(raw_logs):
+
         timestamp   = entry.get("timestamp", "N/A")
         source      = entry.get("source_node", {})
         client_ip   = source.get("client_ip", "192.168.89.134")
@@ -307,28 +420,82 @@ def process_events():
         user_agent  = entry.get("connection_metadata", {}).get("user_agent", "Unknown")
         raw_prompt  = entry.get("captured_payload", {}).get("prompt", "N/A")
 
+        # Skip only completely empty or pure garbage - AI domain traffic always kept
+        is_known_ai = any(d in dest_domain.lower() for d in all_ai_domains)
         if raw_prompt in ("Dynamic Content", "N/A") or "conversation_mode" in str(raw_prompt):
-            continue
+            # (REMOVED FILTER: Show all events)
+            # if not is_known_ai:
+            #     continue
+            # else:
+            if is_known_ai:
+                # Known AI domain but unreadable payload - label it
+                raw_prompt = "[Encrypted / Unknown Payload Format]"
 
-        dest_weight = 0.95 if any(d in dest_domain for d in ["gemini","chatgpt","claude","openai"]) else 0.70
-        user_weight = 0.90 if idx_e % 2 == 0 else 0.65
+        dest_domain_lower = dest_domain.lower()
 
-        is_bot = (len(str(raw_prompt)) < 25 or "f.req=" in str(raw_prompt) or
-                  str(raw_prompt).startswith("trace=") or "PCck7e" in str(raw_prompt) or
+        if any(d in dest_domain_lower for d in all_ai_domains):
+            dest_weight = 0.95
+        elif any(d in dest_domain_lower for d in ["copilot", "enterprise", "internal"]):
+            dest_weight = 0.30
+        else:
+            dest_weight = 0.10
+
+
+
+
+        is_bot = (any(b in str(user_agent).lower() for b in ["python", "curl", "postman", "wget", "bot", "httpie", "insomnia"]) or
+                  str(raw_prompt).startswith("trace=") or 
+                  "PCck7e" in str(raw_prompt) or
                   "aPya6c" in str(raw_prompt))
-        identity = "Automated Bot" if is_bot else "Human Session"
-        identity_icon = "🤖" if is_bot else "🧑‍💻"
+        
+        if is_bot:
+            user_weight = 0.20
+            identity = "Automated Bot"
+            identity_icon = "🤖"
+        else:
+            agent_info = agent_registry.get(client_ip)
+            if agent_info:
+                identity = agent_info.get("username", "Unknown Agent")
+                
+                # Fetch exact weight and role from the new monitored_users DB
+                conn = sqlite3.connect("/home/izu/ShadowAI_Framework/Section3_Dashboard/users.db")
+                cursor = conn.cursor()
+                cursor.execute('SELECT role, u_weight FROM monitored_users WHERE username = ?', (identity,))
+                db_user = cursor.fetchone()
+                conn.close()
+                
+                if db_user:
+                    role = db_user[0]
+                    user_weight = float(db_user[1])
+                else:
+                    # Fallback if user not in DB but is in registry
+                    role = agent_info.get("role", "Standard Staff")
+                    if role == "Privileged Admin": user_weight = 0.90
+                    elif role == "Medical Specialist": user_weight = 0.75
+                    else: user_weight = 0.65
+                
+                if "Admin" in role:
+                    identity_icon = "👑"
+                elif "Medical" in role or "Doc" in role:
+                    identity_icon = "⚕️"
+                else:
+                    identity_icon = "🧑‍💻"
+            else:
+                user_weight = 0.50
+                identity = f"Unregistered ({client_ip})"
+                identity_icon = "👤"
 
-        # Find ALL asset matches in the prompt
+        # Normal text prompt  full WRSE keyword + asset matching pipeline
         asset_matches = find_master_asset_match(str(raw_prompt), asset_idx)
-
         score, keywords, tiers, clean_prompt, norm_str = calculate_wrse(
             str(raw_prompt), dest_weight, user_weight,
-            asset_matches=asset_matches
+            asset_matches=asset_matches,
         )
 
-        if len(clean_prompt.strip()) <= 3 and score < 30 and not asset_matches:
-            continue
+
+        # (REMOVED FILTER: The user wants to see ALL ~1500 alerts, including background telemetry and non-AI traffic)
+        # if len(clean_prompt.strip()) <= 3 and score < 30 and not asset_matches and not is_known_ai:
+        #     continue
 
         sev_label, sev_icon = get_severity(score)
         if asset_matches: asset_match_count += len(asset_matches)
@@ -341,7 +508,6 @@ def process_events():
                 phi_record_id = ", ".join(m["RECORD ID"] for m in asset_matches if m.get("RECORD ID"))
                 data_tier = ", ".join(sorted(set(m["DATA TIER"] for m in asset_matches)))
                 asset_section = ", ".join(sorted(set(m["SECTION"] for m in asset_matches)))
-                asset_weight = max(m["ASSET WEIGHT"] for m in asset_matches)
                 sens_levels = [m.get("SENSITIVITY LEVEL", "HIGH") for m in asset_matches]
                 asset_sensitivity = "CRITICAL" if "CRITICAL" in sens_levels else "HIGH"
             else:
@@ -349,17 +515,17 @@ def process_events():
                 phi_record_id = primary_match["RECORD ID"]
                 data_tier = primary_match["DATA TIER"]
                 asset_section = primary_match["SECTION"]
-                asset_weight = primary_match["ASSET WEIGHT"]
-                asset_sensitivity = primary_match["SENSITIVITY LEVEL"]
+                asset_sensitivity = primary_match.get("SENSITIVITY LEVEL", "HIGH")
         else:
-            phi_matched_label = "—"
-            phi_record_id = "—"
-            data_tier = tiers[0] if tiers else "—"
-            asset_section = "—"
-            asset_weight = "—"
-            asset_sensitivity = "CRITICAL" if score > 80 else ("MODERATE" if score >= 55 else "LOW")
+            phi_matched_label = ""
+            phi_record_id = ""
+            data_tier = tiers[0] if tiers else ""
+            asset_section = ""
+            asset_sensitivity = "CRITICAL" if score > 80 else ("HIGH" if score >= 70 else ("MODERATE" if score >= 55 else "LOW"))
 
         event_id = f"EVT-{idx_e}-{timestamp.replace(' ', '-').replace(':', '')}"
+
+
 
         events.append({
             # Core
@@ -379,28 +545,31 @@ def process_events():
             "Raw Prompt":        str(raw_prompt),
             "Extracted Prompt":  clean_prompt[:200] if clean_prompt else norm_str[:150],
             # WRSE
-            "Triggered Keys":    ", ".join(keywords[:3]) if keywords else "None",
+            "Triggered Keys":    ", ".join(keywords) if keywords else "None",
             "Data Tier":         data_tier,
             "Asset Section":     asset_section,
-            "Asset Weight":      asset_weight,
             "WRSE Score":        score,
             "Severity":          sev_label,
             "Sev Icon":          sev_icon,
             # Master Asset Match info
             "PHI Matched":       phi_matched_label,
-            "PHI Patient ID":    primary_match["PATIENT ID"] if primary_match else "—",
+            "PHI Patient ID":    primary_match["PATIENT ID"] if primary_match else "",
             "PHI Record ID":     phi_record_id,
-            "PHI Blood Type":    primary_match["BLOOD TYPE"] if primary_match else "—",
-            "PHI Nationality":   primary_match["NATIONALITY"] if primary_match else "—",
-            "PHI DOB":           primary_match["DATE OF BIRTH"] if primary_match else "—",
+            "PHI Blood Type":    primary_match["BLOOD TYPE"] if primary_match else "",
+            "PHI Nationality":   primary_match["NATIONALITY"] if primary_match else "",
+            "PHI DOB":           primary_match["DATE OF BIRTH"] if primary_match else "",
             "Sensitivity Level": asset_sensitivity,
+            "Upload Type":       "",
+            "Filename":          "",
+            "File Size (KB)":    0,
             "_phi_records":      asset_matches, # FULL LIST OF MATCHES
             "_raw_entry":        entry,
         })
 
     df = pd.DataFrame(events)
-    # ── GUARANTEE NEWEST ALERTS FIRST (AT THE TOP) ──
+    #  GUARANTEE NEWEST ALERTS FIRST (AT THE TOP) 
     if not df.empty:
-        df = df.sort_values("Timestamp", ascending=False).reset_index(drop=True)
+        df["Timestamp_Parsed"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+        df = df.sort_values("Timestamp_Parsed", ascending=False).reset_index(drop=True)
 
     return df, asset_match_count, all_sheets

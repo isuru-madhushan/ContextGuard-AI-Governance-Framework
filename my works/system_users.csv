@@ -1,0 +1,31 @@
+user_id,username,full_name,email,department,role,u_weight,managed_asset_registry,account_status
+1001,user_chamari_brown,Chamari Brown,user_chamari_brown@techmed.internal,SecOps & Infrastructure,Privileged Admin,0.9,T2_SecurityPerimeter.csv,Suspended
+1002,user_karen_fernando,Karen Fernando,user_karen_fernando@techmed.internal,IAM & Access Control,Privileged Admin,0.9,T2_IAM.csv,Active
+1003,user_nimal_wickrama,Nimal Wickrama,user_nimal_wickrama@techmed.internal,SecOps & Infrastructure,Privileged Admin,0.9,T2_SecurityPerimeter.csv,Active
+1004,user_karen_rathnayake,Karen Rathnayake,user_karen_rathnayake@techmed.internal,IAM & Access Control,Privileged Admin,0.9,T2_IAM.csv,Suspended
+1005,user_robert_smith,Robert Smith,user_robert_smith@techmed.internal,Database Administration,Privileged Admin,0.9,T2_DBConnections.csv,Active
+1006,user_priya_gunawardena,Priya Gunawardena,user_priya_gunawardena@techmed.internal,Cloud Infrastructure,Privileged Admin,0.9,T2_NetworkNodes.csv,Active
+1007,priya_johnson_doc,Dr. Priya Johnson,priya_johnson_doc@techmed.internal,Clinical Oncology,Medical Specialist,0.75,T1_ClinicalDiagnosis.csv,Active
+1008,ruwan_johnson_doc,Dr. Ruwan Johnson,ruwan_johnson_doc@techmed.internal,Neurology,Medical Specialist,0.75,T1_ClinicalDiagnosis.csv,Active
+1009,isuru_wickrama_doc,Dr. Isuru Wickrama,isuru_wickrama_doc@techmed.internal,Cardiology,Medical Specialist,0.75,T1_ClinicalDiagnosis.csv,Active
+1010,sarah_fernando_doc,Dr. Sarah Fernando,sarah_fernando_doc@techmed.internal,General Medicine,Medical Specialist,0.75,T1_PatientCoreIDs.csv,Active
+1011,richard_garcia_doc,Dr. Richard Garcia,richard_garcia_doc@techmed.internal,Clinical Pharmacy,Medical Specialist,0.75,T1_Pharmacy.csv,Active
+1012,chamari_gunawardena_doc,Dr. Chamari Gunawardena,chamari_gunawardena_doc@techmed.internal,Pathology & Lab Medicine,Medical Specialist,0.75,T1_LabTelemetry.csv,Active
+1013,james_rathnayake_doc,Dr. James Rathnayake,james_rathnayake_doc@techmed.internal,Radiology & Imaging,Medical Specialist,0.75,T1_LabTelemetry.csv,Suspended
+1014,isuru_taylor_doc,Dr. Isuru Taylor,isuru_taylor_doc@techmed.internal,Insurance & Clinical Audit,Medical Specialist,0.75,T1_Insurance.csv,Active
+1015,joseph_desilva_lab,Joseph De Silva,joseph_desilva_lab@techmed.internal,Pathology Lab,Standard Staff,0.65,T1_LabTelemetry.csv,Active
+1016,charles_bandara_lab,Charles Bandara,charles_bandara_lab@techmed.internal,Pathology Lab,Standard Staff,0.65,T1_LabTelemetry.csv,Active
+1017,nimal_jones_lab,Nimal Jones,nimal_jones_lab@techmed.internal,Pathology Lab,Standard Staff,0.65,T1_LabTelemetry.csv,Active
+1018,priya_jayasinghe_lab,Priya Jayasinghe,priya_jayasinghe_lab@techmed.internal,Pathology Lab,Standard Staff,0.65,T1_LabTelemetry.csv,Active
+1019,priya_smith_strat,Priya Smith,priya_smith_strat@techmed.internal,Strategic Planning,Standard Staff,0.65,T3_StrategicBlueprints.csv,Active
+1020,dilini_jones_strat,Dilini Jones,dilini_jones_strat@techmed.internal,Strategic Planning,Standard Staff,0.65,T3_StrategicBlueprints.csv,Active
+1021,william_silva_strat,William Silva,william_silva_strat@techmed.internal,Strategic Planning,Standard Staff,0.65,T3_StrategicBlueprints.csv,Suspended
+1022,barbara_jayasinghe_ops,Barbara Jayasinghe,barbara_jayasinghe_ops@techmed.internal,Operations & Logistics,Standard Staff,0.65,T3_VendorContracts.csv,Active
+1023,linda_fernando_ops,Linda Fernando,linda_fernando_ops@techmed.internal,Operations & Logistics,Standard Staff,0.65,T3_VendorContracts.csv,Active
+1024,malaka_taylor_swe,Malaka Taylor,malaka_taylor_swe@techmed.internal,Software Engineering,Standard Staff,0.65,T3_SourceCodeAPI.csv,Active
+1025,user_robert_wilson,Robert Wilson,user_robert_wilson@techmed.internal,Health Informatics,Standard Staff,0.65,T3_HL7Protocols.csv,Active
+1026,user_mary_jayasinghe,Mary Jayasinghe,user_mary_jayasinghe@techmed.internal,Human Resources,Standard Staff,0.65,T2_IAM.csv,Suspended
+1027,svc_hl7_sync,HL7 Sync Daemon,svc_hl7_sync@techmed.internal,Automation & Integration,Automated Bot,0.2,T3_HL7Protocols.csv,Active
+1028,svc_db_backup,DB Backup Cron,svc_db_backup@techmed.internal,Automation & Integration,Automated Bot,0.2,T2_DBConnections.csv,Active
+1029,svc_etl_telemetry,ETL Telemetry Sync,svc_etl_telemetry@techmed.internal,Automation & Integration,Automated Bot,0.2,T1_LabTelemetry.csv,Active
+1030,svc_pacs_sync,PACS Imaging Sync,svc_pacs_sync@techmed.internal,Automation & Integration,Automated Bot,0.2,T3_HL7Protocols.csv,Suspended
