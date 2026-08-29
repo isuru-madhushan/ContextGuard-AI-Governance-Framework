@@ -397,6 +397,7 @@ def process_events():
 
     events = []
     asset_match_count = 0
+    ip_timestamps = {}
 
     # Load AI domains once (outside loop for performance)
     DOMAINS_FILE = "/home/izu/ShadowAI_Framework/Section1_DataIngestion/domains.json"
@@ -443,7 +444,31 @@ def process_events():
 
 
 
-        is_bot = (any(b in str(user_agent).lower() for b in ["python", "curl", "postman", "wget", "bot", "httpie", "insomnia"]) or
+        # --- Mathematical Network-Level Behavioral Formulation (IAT Variance - Thesis Section 3.4 & 5.4) ---
+        iat_variance = 999.0
+        payload_size = len(str(raw_prompt).encode('utf-8'))
+        try:
+            dt_obj = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            ts_epoch = dt_obj.timestamp()
+        except Exception:
+            ts_epoch = None
+
+        if ts_epoch is not None:
+            if client_ip not in ip_timestamps:
+                ip_timestamps[client_ip] = []
+            ip_timestamps[client_ip].append(ts_epoch)
+            recent_ts = ip_timestamps[client_ip][-5:]
+            if len(recent_ts) >= 2:
+                deltas = [recent_ts[i] - recent_ts[i-1] for i in range(1, len(recent_ts))]
+                if len(deltas) >= 1:
+                    mean_iat = sum(deltas) / len(deltas)
+                    iat_variance = sum((d - mean_iat) ** 2 for d in deltas) / len(deltas)
+
+        # Formula condition from Thesis: IAT_variance < 1.0 s^2 AND payload < 25 bytes
+        is_iat_bot = (iat_variance < 1.0 and payload_size < 25)
+
+        is_bot = (is_iat_bot or 
+                  any(b in str(user_agent).lower() for b in ["python", "curl", "postman", "wget", "bot", "httpie", "insomnia", "powershell", "windowspowershell"]) or
                   str(raw_prompt).startswith("trace=") or 
                   "PCck7e" in str(raw_prompt) or
                   "aPya6c" in str(raw_prompt))

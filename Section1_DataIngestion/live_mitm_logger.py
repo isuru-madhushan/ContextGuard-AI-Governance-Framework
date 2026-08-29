@@ -168,13 +168,10 @@ def request(flow: http.HTTPFlow) -> None:
                 print(f"[🔍 GROK DEBUG] Raw (first 300 chars): {raw_content[:300]}")
                 print(f"[🔍 GROK DEBUG] Parsed prompt: {str(prompt_text)[:200] if prompt_text else 'NONE'}\n")
 
-            # Stage 3: Aggressive raw content fallback (Disabled to prevent telemetry FP)
-            if not prompt_text or len(str(prompt_text).strip()) < 5:
-                return # Skip logging entirely if we couldn't find a valid prompt
+            if not prompt_text or len(str(prompt_text).strip()) < 3:
+                return # Skip logging if prompt is empty or less than 3 chars
             if prompt_text:
                 pt_str = str(prompt_text).strip()
-                if pt_str.startswith("trace=") or "PCck7e" in pt_str or "aPya6c" in pt_str:
-                    return
                 if len(pt_str) < 3 and pt_str.lower() not in ["hi", "ok", "no"]:
                     return
 

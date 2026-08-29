@@ -1,2 +1,7 @@
 *.db
 *.log
+__pycache__/
+*.zip
+*.tar.gz
+data Sheets/
+Reports/
